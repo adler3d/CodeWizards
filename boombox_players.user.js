@@ -5,6 +5,8 @@
 // @version     v1 (2016.12.03)
 // @grant       none
 // @include     http://russianaicup.ru/profile/*
+// @include     http://russianaicup.ru/games/creator/*
+// @include     http://russianaicup.ru/games/with/*
 // @autor       Adler
 // ==/UserScript==
 
