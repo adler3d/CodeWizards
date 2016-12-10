@@ -35,6 +35,12 @@
     });
     //alert("bef");
     xhr_with_abort('get',"/boombox/data/games/"+token+"?tick=0&fields=tickIndex,players,wizards",e);
+    var cb=s=>{
+      var t=s.split("Длительность: ")[1].split("</div>")[0];
+      tag(e,"span").filter(u=>u.className=="day")[0].parentNode.innerHTML+="<br><br>"+t;
+    }
+    xhr("get","/game/view/"+id+"?a=get_duration",cb);
+
     [id,names,v,points,d,token];
     //games[id]=[id,names,v,points,d,token];
     return [id,names,v,points,d,token];
@@ -64,3 +70,10 @@ function xhr_with_abort(method,url,elem)
 }
 
 //var x=xhr_with_abort('get',"/boombox/data/games/c1_u94cet2bcuuos0uxoiey6ep4fev?tick=0&fields=tickIndex,players,wizards",0);
+
+function xhr(method,url,callback)
+{
+  var x=new XMLHttpRequest();
+  x.onreadystatechange=function(){if(x.readyState===4){callback(x.responseText,x.status,url);}};
+  x.open(method,url);x.send();return x;
+}
