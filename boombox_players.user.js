@@ -7,8 +7,16 @@
 // @include     http://russianaicup.ru/profile/*
 // @include     http://russianaicup.ru/games/creator/*
 // @include     http://russianaicup.ru/games/with/*
+// @include     http://russianaicup.ru/contest*
 // @autor       Adler
 // ==/UserScript==
+
+  make_global([get_boombox_players_counter]);
+  var g_counter=0;
+  function get_boombox_players_counter(){return g_counter;}
+
+  var loc=location.href;
+  if(loc.includes("standings"))return;
 
   var arr2str=out=>"[\n"+out.map(e=>JSON.stringify(e)).join(",\n")+"\n]";
   var repelem=(elem,t,to)=>tag(elem,t).map(e=>e.outerHTML=to);
@@ -37,7 +45,7 @@
     xhr_with_abort('get',"/boombox/data/games/"+token+"?tick=0&fields=tickIndex,players,wizards",e);
     var cb=s=>{
       var t=s.split("Длительность: ")[1].split("</div>")[0];
-      tag(e,"span").filter(u=>u.className=="day")[0].parentNode.innerHTML+="<br><br>"+t;
+      tag(tag(e,"td")[0],"a")[0].parentNode.innerHTML+="<br>"+t;
     }
     xhr("get","/game/view/"+id+"?a=get_duration",cb);
 
@@ -50,6 +58,7 @@
 var urls={};
 function xhr_with_abort(method,url,elem)
 {
+  g_counter++;
   var x=new XMLHttpRequest();
   var p=s=>{
     var arr=JSON.parse(s).map(e=>e.name);
@@ -65,6 +74,7 @@ function xhr_with_abort(method,url,elem)
     if(url in urls)return;
     g(x.responseText);x.abort();
     urls[url]=1;
+    g_counter--;
   };
   x.open(method,url,true);x.send();return x;
 }
@@ -76,4 +86,11 @@ function xhr(method,url,callback)
   var x=new XMLHttpRequest();
   x.onreadystatechange=function(){if(x.readyState===4){callback(x.responseText,x.status,url);}};
   x.open(method,url);x.send();return x;
+}
+
+function make_global(arr)
+{
+  document["g_funcs"]={};
+  var out=[];for(var i=0;i<arr.length;i++){var ex=arr[i];var exn=arr[i].name;document.g_funcs[exn]=arr[i];out.push("var "+exn+"=document.g_funcs."+exn);}
+  var code=out.join("\n");var s=document.createElement('script');s.innerHTML=code;document.body.appendChild(s);
 }
