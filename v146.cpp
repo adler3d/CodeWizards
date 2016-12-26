@@ -398,6 +398,8 @@ struct t_shot_config{
 
 static const t_shot_config shot_conf;
 
+int mmrad=0;
+int mmdmg=0;
 
 struct t_shot_state{
   int dist;
@@ -406,8 +408,6 @@ struct t_shot_state{
   t_shot_state(){dist=-1;ang=-1;spd=-1;}
   bool operator!=(const t_shot_state&ref)const{return dist!=ref.dist||ang!=ref.ang||spd!=ref.spd;}
 };
-
-int mmdmg=0;
 
 struct t_shot{
   int wizid;
@@ -421,7 +421,7 @@ struct t_shot{
   int rcdt;
   bool ready;
   real profit;
-  bool staff;
+  ActionType action;
   int self_rcdt;
   t_shot_state target_cast_state;
   real our_weapon_dmg;
@@ -432,11 +432,14 @@ struct t_shot{
       F(hp)+F(attrange)+F(rcdt)+F(dmg)+F(dist)+F(self_turn_ticks)+F(self_rcdt)+F(our_weapon_dmg)
     );
     if(hp<=mmdmg*2)if(attrange>=499)profit+=F(attrange);
+    auto base_dist=ep.dist_to(real_our_base_pos);
+    auto danger_dist=attrange+pgame->factionBaseRadius+mmrad;
+    if(base_dist<danger_dist){
+      profit+=25.0*(danger_dist-base_dist)/danger_dist;
+    }
     #undef F
   }
 };
-
-int mmrad=0;
 
 struct t_wizard_acc_stat{
   typedef t_shot_state t_state;
@@ -843,10 +846,14 @@ struct MeWorld:public World
     vec2d center;
     int n;
     int hp;
+    int tn;
+    int thp;
   };
   bool inside_wizwall(const Wizard&self,t_wizwall&wall){
     return wall.center.dist_to_point_less_that_r(get_pos(self),pgame->wizardCastRange);
   }
+  t_wizwall get_wizwall(const Unit&ref){QapAssert(false);t_wizwall tmp={get_pos(ref)};return tmp;}
+  t_wizwall get_wizwall(const t_tow&ref){QapAssert(false);t_wizwall tmp={get_pos(ref)};return tmp;}
   template<class TYPE>
   t_go_back_result need_go_back(const Wizard&self,real shp,real smf,const vec2d&sp,real sr,const vec2d&dir,const TYPE&e){
     bool go_back=false;bool go_fast=false;bool go_panic=false;
@@ -868,7 +875,8 @@ struct MeWorld:public World
     {
       if(shp>ehp||(shp==self.maxLife&&shp==ehp))if(shp>64)wiz_buff=-25;
       auto wall=get_wizwall(self);
-      if(shp>24)if(wall.n>=2&&wall.center.dist_to_point_less_that_r(sp,pgame->wizardCastRange))wiz_buff=-50;
+      auto ewall=get_wizwall(e);
+      if(shp>24)if(wall.n>=2||(wall.tn>ewall.tn&&wall.thp>=ewall.thp+64))wiz_buff=-150;
     }
     /*
     if(!almost_equal(self_bspd,maxspd)&&self_bspd<maxspd){
@@ -1074,6 +1082,7 @@ struct MeWorld:public World
   template<class TYPE>
   t_go_back_result update_enemy_arr(vector<t_shot>&out,const vector<TYPE>&arr,const Wizard&self,const Game&game,Move&move,const vec2d&ox)
   {
+    auto mp_based_mm_rcdt=pgame->magicMissileManacost/get_mana_regspd(self);
     auto mmdmg=get_mmmmm_dmg(self);
     auto sfdmg=get_staff_dmg(self);
     real ex_attrange_gap=0;
@@ -1086,6 +1095,8 @@ struct MeWorld:public World
     auto self_rcdt_act=self.getRemainingActionCooldownTicks();
     auto self_rcdt_mmmmm=std::max(self_rcdt_act,self.getRemainingCooldownTicksByAction()[ACTION_MAGIC_MISSILE]);
     auto self_rcdt_staff=std::max(self_rcdt_act,self.getRemainingCooldownTicksByAction()[ACTION_STAFF]);
+    auto self_rcdt_frost=std::max(self_rcdt_act,self.getRemainingCooldownTicksByAction()[ACTION_FROST_BOLT]);
+    auto self_rcdt_fire=std::max(self_rcdt_act,self.getRemainingCooldownTicksByAction()[ACTION_FIREBALL]);
     for(int i=0;i<arr.size();i++)
     {
       auto&ex=arr[i];
@@ -1098,6 +1109,56 @@ struct MeWorld:public World
       auto personal_cast_range=wizid2personal_cast_range(ep-sp,get_wizid(ex),self.getCastRange()+er+mmrad-0.2,sx_attrange);
       if(is_vulnerable(ex))
       {
+        if(dist<personal_cast_range.dist)if(has_frostbolt(self))
+        {
+          self_rcdt_frost=std::max(mp_based_rcdt(self,pgame->frostBoltManacost),self_rcdt_frost);
+          auto bullet_fly_ticks=real_to_int_up(dist/pgame->frostBoltSpeed);
+          if(self_rcdt_frost<mp_based_mm_rcdt)
+          {
+            auto&shot=qap_add_back(out);
+            shot.wizid=get_wizid(ex);
+            shot.ep=get_pos(ex);
+            shot.ep=ep;
+            shot.er=er;
+            shot.rcdt=get_rcdt_minus_fly_ticks(ex,bullet_fly_ticks);
+            shot.hp=get_hp(ex);
+            shot.dmg=get_dmg(ex);
+            shot.dist=dist;
+            shot.attrange=get_attrange(ex);
+            double angle=self.getAngleTo(ep.x,ep.y);
+            shot.self_turn_ticks=std::max(0,get_min_turn_ticks(ep,sp,sx_ang,sx_attsec,sx_angspd)-self_rcdt_frost);
+            shot.ready=abs(angle)<game.getStaffSector()/2.0;
+            shot.action=ACTION_FROST_BOLT;
+            shot.self_rcdt=self_rcdt_frost;
+            shot.target_cast_state=personal_cast_range;
+            shot.our_weapon_dmg=pgame->frostBoltDirectDamage;
+          }
+        }
+        if(dist<personal_cast_range.dist)if(has_fireball(self))
+        {
+          self_rcdt_fire=std::max(mp_based_rcdt(self,pgame->fireballManacost),self_rcdt_fire);
+          auto bullet_fly_ticks=real_to_int_up(dist/pgame->fireballSpeed);
+          if(self_rcdt_fire<mp_based_mm_rcdt)
+          {
+            auto&shot=qap_add_back(out);
+            shot.wizid=get_wizid(ex);
+            shot.ep=get_pos(ex);
+            shot.ep=ep;
+            shot.er=er;
+            shot.rcdt=get_rcdt_minus_fly_ticks(ex,bullet_fly_ticks);
+            shot.hp=get_hp(ex);
+            shot.dmg=get_dmg(ex);
+            shot.dist=dist;
+            shot.attrange=get_attrange(ex);
+            double angle=self.getAngleTo(ep.x,ep.y);
+            shot.self_turn_ticks=std::max(0,get_min_turn_ticks(ep,sp,sx_ang,sx_attsec,sx_angspd)-self_rcdt_fire);
+            shot.ready=abs(angle)<game.getStaffSector()/2.0;
+            shot.action=ACTION_FIREBALL;
+            shot.self_rcdt=self_rcdt_fire;
+            shot.target_cast_state=personal_cast_range;
+            shot.our_weapon_dmg=pgame->fireballExplosionMaxDamage;
+          }
+        }
         if(dist<personal_cast_range.dist)
         {
           auto&shot=qap_add_back(out);
@@ -1113,7 +1174,7 @@ struct MeWorld:public World
           double angle=self.getAngleTo(ep.x,ep.y);
           shot.self_turn_ticks=std::max(0,get_min_turn_ticks(ep,sp,sx_ang,sx_attsec,sx_angspd)-self_rcdt_mmmmm);
           shot.ready=abs(angle)<game.getStaffSector()/2.0;
-          shot.staff=false;
+          shot.action=ACTION_MAGIC_MISSILE;
           shot.self_rcdt=self_rcdt_mmmmm;
           shot.target_cast_state=personal_cast_range;
           shot.our_weapon_dmg=mmdmg;
@@ -1125,7 +1186,7 @@ struct MeWorld:public World
           shot.ep=get_pos(ex);
           shot.ep=ep;
           shot.er=er;
-          shot.rcdt=get_rcdt_minus_fly_ticks(ex,bullet_fly_ticks);
+          shot.rcdt=get_rcdt_minus_fly_ticks(ex,0);
           shot.hp=get_hp(ex);
           shot.dmg=get_dmg(ex);
           shot.dist=dist;
@@ -1133,7 +1194,7 @@ struct MeWorld:public World
           double angle=self.getAngleTo(ep.x,ep.y);
           shot.self_turn_ticks=std::max(0,get_min_turn_ticks(ep,sp,sx_ang,sx_attsec,sx_angspd)-self_rcdt_staff);
           shot.ready=abs(angle)<game.getStaffSector()/2.0;
-          shot.staff=true;
+          shot.action=ACTION_STAFF;
           shot.self_rcdt=self_rcdt_staff;
           shot.target_cast_state=personal_cast_range;
           shot.our_weapon_dmg=sfdmg;
@@ -1159,14 +1220,10 @@ struct MeWorld:public World
       double angle=self.getAngleTo(ep.x,ep.y);
     move.setTurn(angle);
     if(!shot.ready)return;
-    if(shot.staff&&!shot.self_rcdt)
-    {
-      int do_it=1;
-    }
-    move.setAction(shot.staff?ACTION_STAFF:ACTION_MAGIC_MISSILE);
+    move.setAction(shot.action);
     move.setCastAngle(angle);
-    move.setMinCastDistance(shot.staff?0:dist-er-mmrad-0.1);
-    if(shot.wizid>=0)if(!shot.staff&&!shot.self_rcdt){
+    move.setMinCastDistance(shot.action==ACTION_STAFF?0:dist-er-mmrad-0.1);
+    if(shot.wizid>=0)if(shot.action==ACTION_MAGIC_MISSILE&&!shot.self_rcdt){
       auto*p=final_mode?&final_wizacc:id2wizacc(shot.wizid);
       mm_target.wizid=shot.wizid;
       mm_target.beg=sp;
@@ -1205,13 +1262,15 @@ struct MeWorld:public World
     return id>=0?arr[id].getId():-1;
   }
   t_wizwall get_wizwall_in_point(const Wizard&wiz){
-    t_wizwall out={get_pos(wiz),0,0};
+    t_wizwall out={get_pos(wiz),0,0,0,0};
     auto&arr=wizards;
     for(int i=0;i<arr.size();i++)
     {
       auto&ex=arr[i];
       if(ex.faction==wiz.faction)continue;
       if(!get_pos(ex).dist_to_point_less_that_r(out.center,pgame->wizardCastRange))continue;
+      out.tn++;
+      out.thp+=get_hp(ex);
       if(ex.remainingActionCooldownTicks)continue;
       if(ex.remainingCooldownTicksByAction[ACTION_MAGIC_MISSILE])continue;
       out.n++;
@@ -1221,15 +1280,22 @@ struct MeWorld:public World
   }
   t_wizwall get_wizwall(const Wizard&self)
   {
+    auto sp=get_pos(self);
     vector<t_wizwall> out;
     auto&arr=wizards;
     for(int i=0;i<arr.size();i++)
     {
       auto&ex=arr[i];
-      if(ex.faction==self.faction)continue;
+      if(ex.faction!=self.faction)continue;
+      if(!get_pos(ex).dist_to_point_less_that_r(sp,pgame->wizardCastRange))continue;
       qap_add_back(out)=get_wizwall_in_point(ex);
     }
-    int best_id=QAP_MINVAL_ID_OF_VEC(out,-ex.hp);
+    int best_id=QAP_MINVAL_ID_OF_VEC(out,-ex.tn);
+    if(best_id<0)
+    {
+      t_wizwall fail={get_pos(self),0,0,0,0};
+      return fail;
+    }
     auto&best=out[best_id];
     return best;
   }
@@ -1355,7 +1421,7 @@ struct MeWorld:public World
       if(best_id>=0)for(;;)
       {
         auto&best=shots[best_id];
-        if(final_mode)if(!bfp_sum.go_back)if(!best.staff)if(best.ready)if(best.wizid>=0)break;
+        if(final_mode)if(!bfp_sum.go_back)if(best.action!=ACTION_STAFF)if(best.ready)if(best.wizid>=0)break;
         if(try_haste(self,game,move))break;
         if(try_shield(self,game,move))break;
         do_shot(best,self,game,move,to_enemy_base);
@@ -1373,7 +1439,9 @@ struct MeWorld:public World
         if(is_near_ewiz_found)
         {
           auto wall=get_wizwall(self);
-          if(wall.n>=2)if(inside_wizwall(self,wall))ignore_go_back_because_of_wizwall=true;
+          auto ewall=get_wizwall_in_point(near_ewiz);
+          if(wall.n>=2&&(real(wall.hp)/wall.n>24))ignore_go_back_because_of_wizwall=true;
+          if(wall.tn>=2)if(wall.tn>=ewall.tn)if(wall.thp>ewall.thp+64)ignore_go_back_because_of_wizwall=true;
         }else ignore_go_back_because_of_wizwall=true;
       }
       if(ignore_go_back_because_of_wizwall){
@@ -1652,8 +1720,9 @@ void MyStrategy::move(const Wizard& self, const World& world, const Game& game, 
     */
     //vector<SkillType> log;for(int i=0;i<25;i++){
     SkillType ignore[]={
-      SKILL_FROST_BOLT,
-      SKILL_FIREBALL
+      _SKILL_COUNT_
+      //SKILL_FROST_BOLT,
+      //SKILL_FIREBALL
     };
     auto TO_MISSILE=SKILL_RANGE_BONUS_PASSIVE_1;
     auto TO_FROST_BOLT=SKILL_MAGICAL_DAMAGE_BONUS_PASSIVE_1;
