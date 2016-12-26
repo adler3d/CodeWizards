@@ -848,6 +848,7 @@ struct MeWorld:public World
     int hp;
     int tn;
     int thp;
+    real get_avr_thp(){return !tn?0:real(thp)/tn;}
   };
   bool inside_wizwall(const Wizard&self,t_wizwall&wall){
     return wall.center.dist_to_point_less_that_r(get_pos(self),pgame->wizardCastRange);
@@ -876,7 +877,7 @@ struct MeWorld:public World
       if(shp>ehp||(shp==self.maxLife&&shp==ehp))if(shp>64)wiz_buff=-25;
       auto wall=get_wizwall(self);
       auto ewall=get_wizwall(e);
-      if(shp>24)if(wall.n>=2||(wall.tn>ewall.tn&&wall.thp>=ewall.thp+64))wiz_buff=-150;
+      if(shp>24)if(wall.n>=2||(wall.tn>ewall.tn&&wall.thp>=ewall.thp+64))wiz_buff=-100;
     }
     /*
     if(!almost_equal(self_bspd,maxspd)&&self_bspd<maxspd){
@@ -1440,8 +1441,8 @@ struct MeWorld:public World
         {
           auto wall=get_wizwall(self);
           auto ewall=get_wizwall_in_point(near_ewiz);
-          if(wall.n>=2&&(real(wall.hp)/wall.n>24))ignore_go_back_because_of_wizwall=true;
-          if(wall.tn>=2)if(wall.tn>=ewall.tn)if(wall.thp>ewall.thp+64)ignore_go_back_because_of_wizwall=true;
+          //if(wall.n>=2&&(real(wall.hp)/wall.n>24))ignore_go_back_because_of_wizwall=true;
+          if(wall.tn>=2)if(wall.tn>=ewall.tn)if(wall.get_avr_thp()>ewall.get_avr_thp()+42)ignore_go_back_because_of_wizwall=true;
         }else ignore_go_back_because_of_wizwall=true;
       }
       if(ignore_go_back_because_of_wizwall){
