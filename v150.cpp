@@ -877,7 +877,7 @@ struct MeWorld:public World
       if(shp>ehp||(shp==self.maxLife&&shp==ehp))if(shp>64)wiz_buff=-25;
       auto wall=get_wizwall(self);
       auto ewall=get_wizwall(e);
-      if(shp>24)if(wall.n>=2||(wall.tn>ewall.tn&&wall.thp>=ewall.thp+64))wiz_buff=-100;
+      if(shp>24)if(wall.n>=2||(wall.tn>ewall.tn&&wall.thp>=ewall.thp+64))if(wall.get_avr_thp()>ewall.get_avr_thp()+24)wiz_buff=-64;
     }
     /*
     if(!almost_equal(self_bspd,maxspd)&&self_bspd<maxspd){
