@@ -193,6 +193,7 @@ public:
 using namespace model;
 const Game*pgame=nullptr;
 vec2d our_base_pos(000,4000);
+vec2d real_our_base_pos(000,3600);
 vec2d enemy_base_pos(-1,-1);
 vec2d real_enemy_base_pos(-1,-1);
 vec2d get_pos(const Unit&u){return vec2d(u.getX(),u.getY());}
@@ -406,6 +407,8 @@ struct t_shot_state{
   bool operator!=(const t_shot_state&ref)const{return dist!=ref.dist||ang!=ref.ang||spd!=ref.spd;}
 };
 
+int mmdmg=0;
+
 struct t_shot{
   int wizid;
   vec2d ep;
@@ -428,11 +431,11 @@ struct t_shot{
     profit=(
       F(hp)+F(attrange)+F(rcdt)+F(dmg)+F(dist)+F(self_turn_ticks)+F(self_rcdt)+F(our_weapon_dmg)
     );
+    if(hp<=mmdmg*2)if(attrange>=499)profit+=F(attrange);
     #undef F
   }
 };
 
-int mmdmg=0;
 int mmrad=0;
 
 struct t_wizard_acc_stat{
@@ -479,13 +482,14 @@ struct t_lane{
   vector<t_tow*> arr;
   vec2d get_pos()const{
     for(int i=0;i<arr.size();i++)if(arr[i]->hp)return arr[i]->pos;
-    return enemy_base_pos;
+    return real_enemy_base_pos+(real_enemy_base_pos-real_our_base_pos).SetMag(pgame->factionBaseRadius*0.5);
   }
   bool unlocked()const{
     for(int i=0;i<arr.size();i++)if(arr[i]->hp)return false;
     return true;
   }
 };
+
 struct t_main_tower_info{
   t_lane top;
   t_lane mid;
@@ -585,7 +589,7 @@ struct MeWorld:public World
   real get_movfactor(const Wizard&ref)const{
     return (is_hastened(ref)?1.0+pgame->hastenedMovementBonusFactor:1.0)+get_selfmovbon(ref);
   }
-  real get_movfactor_with_timelimit(const Wizard&ref,int TL=128)const{
+  real get_movfactor_with_timelimit(const Wizard&ref,int TL=16)const{
     if(auto*p=get_hastened(ref))if(p->getRemainingDurationTicks()<TL)return 1+get_selfmovbon(ref);return get_movfactor(ref);
   }
   vec2d movedir2input(const Game&game,const Wizard&self,const vec2d&dir)const{
@@ -835,6 +839,14 @@ struct MeWorld:public World
     }
     return out;
   }
+  struct t_wizwall{
+    vec2d center;
+    int n;
+    int hp;
+  };
+  bool inside_wizwall(const Wizard&self,t_wizwall&wall){
+    return wall.center.dist_to_point_less_that_r(get_pos(self),pgame->wizardCastRange);
+  }
   template<class TYPE>
   t_go_back_result need_go_back(const Wizard&self,real shp,real smf,const vec2d&sp,real sr,const vec2d&dir,const TYPE&e){
     bool go_back=false;bool go_fast=false;bool go_panic=false;
@@ -852,7 +864,12 @@ struct MeWorld:public World
     auto bulletspd=get_maxbulletspd(e);
     auto maxspd=get_maxspd(e);
     auto is_ewiz=maxspd>bot_spd;
-    if(is_ewiz&&final_mode&&(shp>ehp||(shp==self.maxLife&&shp==ehp))&&shp>64)wiz_buff=-25;
+    if(is_ewiz&&final_mode)
+    {
+      if(shp>ehp||(shp==self.maxLife&&shp==ehp))if(shp>64)wiz_buff=-25;
+      auto wall=get_wizwall(self);
+      if(shp>24)if(wall.n>=2&&wall.center.dist_to_point_less_that_r(sp,pgame->wizardCastRange))wiz_buff=-50;
+    }
     /*
     if(!almost_equal(self_bspd,maxspd)&&self_bspd<maxspd){
       go_panic=!almost_equal(self_fspd,maxspd)&&self_fspd<maxspd;
@@ -976,7 +993,6 @@ struct MeWorld:public World
     }
     if(has_frostbolt(ref))
     {
-      pgame->frostBoltRadius;
       auto self_rcdt_fr=std::max(self_rcdt_act,ref.getRemainingCooldownTicksByAction()[ACTION_FROST_BOLT]);
       auto&b=qap_add_back(out);
       b.mcost=pgame->frostBoltManacost;
@@ -1188,7 +1204,35 @@ struct MeWorld:public World
     auto id=QAP_MINVAL_ID_OF_VEC(arr,get_hp(ex));
     return id>=0?arr[id].getId():-1;
   }
-
+  t_wizwall get_wizwall_in_point(const Wizard&wiz){
+    t_wizwall out={get_pos(wiz),0,0};
+    auto&arr=wizards;
+    for(int i=0;i<arr.size();i++)
+    {
+      auto&ex=arr[i];
+      if(ex.faction==wiz.faction)continue;
+      if(!get_pos(ex).dist_to_point_less_that_r(out.center,pgame->wizardCastRange))continue;
+      if(ex.remainingActionCooldownTicks)continue;
+      if(ex.remainingCooldownTicksByAction[ACTION_MAGIC_MISSILE])continue;
+      out.n++;
+      out.hp+=get_hp(ex);
+    }
+    return out;
+  }
+  t_wizwall get_wizwall(const Wizard&self)
+  {
+    vector<t_wizwall> out;
+    auto&arr=wizards;
+    for(int i=0;i<arr.size();i++)
+    {
+      auto&ex=arr[i];
+      if(ex.faction==self.faction)continue;
+      qap_add_back(out)=get_wizwall_in_point(ex);
+    }
+    int best_id=QAP_MINVAL_ID_OF_VEC(out,-ex.hp);
+    auto&best=out[best_id];
+    return best;
+  }
   void move(const Wizard&self,const World&world,const Game&game,Move&move)
   {
     auto final_mode=game.rawMessagesEnabled;
@@ -1254,10 +1298,13 @@ struct MeWorld:public World
     real under_tow_hp_keof=enemy_main_tower.unlocked()?0.80:0.65;
     if(final_mode)under_tow_hp_keof=50.0/self.maxLife;
     auto&wizards=getWizards();
-    auto near_wiz_index=QAP_MINVAL_ID_OF_VEC(wizards,get_pos(ex).sqr_dist_to(sp)+(self.getFaction()==ex.getFaction()?1e9:0));
+    auto near_wiz_index=QAP_MINVAL_ID_OF_VEC(wizards,get_pos(ex).sqr_dist_to(sp)+(self.faction==ex.faction?1e9:0));
     const auto&near_ewiz=wizards[near_wiz_index];
-    if(!final_mode)if(self.getFaction()!=near_ewiz.getFaction())if(get_pos(near_ewiz).dist_to(sp)<self.getVisionRange()*1.2)under_tow_hp_keof=0.9;
+    bool is_near_ewiz_found=false;
+    if(self.faction!=near_ewiz.faction)if(get_pos(near_ewiz).dist_to(sp)<self.visionRange*1.2)is_near_ewiz_found=true;
+    if(!final_mode)if(is_near_ewiz_found)under_tow_hp_keof=0.9;
     if(self.getLife()<self.getMaxLife()*under_tow_hp_keof)go_home=go_home||(go_home_from_tows);
+    bool go_from_bullet=false;
     auto&arr=world.getProjectiles();
     for(int i=0;i<arr.size();i++){
       auto&ex=arr[i];
@@ -1265,7 +1312,7 @@ struct MeWorld:public World
       if(ex.getOwnerPlayerId()==self.getOwnerPlayerId())continue;
       if(is_teamate(self,ex.getOwnerPlayerId()))continue;
       auto sp_ox=(sp-get_pos(ex)).Rot(get_spd(ex));
-      if(abs(sp_ox.y)<sr+mmrad)if(abs(sp_ox.x)<self.getCastRange()){go_home=true;if(shp<50)if(ex.getRadius()==mmrad)go_fast=true;}
+      if(abs(sp_ox.y)<sr+mmrad)if(abs(sp_ox.x)<self.getCastRange()){go_home=true;go_from_bullet=true;if(shp<50)if(ex.getRadius()==mmrad)go_fast=true;}
     }
     
     //if(!final_mode||shp<=25)
@@ -1305,9 +1352,32 @@ struct MeWorld:public World
         ex.update_profit(sp,sr);
       }
       auto best_id=QAP_MINVAL_ID_OF_VEC(shots,-ex.profit);
-      if(best_id>=0){
+      if(best_id>=0)for(;;)
+      {
         auto&best=shots[best_id];
+        if(final_mode)if(!bfp_sum.go_back)if(!best.staff)if(best.ready)if(best.wizid>=0)break;
+        if(try_haste(self,game,move))break;
+        if(try_shield(self,game,move))break;
         do_shot(best,self,game,move,to_enemy_base);
+        break;
+      }
+      if(final_mode)if(shp>16)if(is_near_ewiz_found)if(!go_from_bullet)
+      {
+        auto to_enemy=(wh-real_our_base_pos)-real_our_base_pos;
+        auto fire_point=real_our_base_pos+to_enemy.SetMag(game.factionBaseRadius+self.radius*1.5+12.5*3.5);
+        if((sp-fire_point).Rot(to_enemy).x<0){bfp_sum.go_back=false;bfp_sum.go_fast=false;}
+      }
+      bool ignore_go_back_because_of_wizwall=false;
+      if(final_mode)if(real_enemy_base_pos.dist_to_point_less_that_r(sp,self.castRange))if(enemy_main_tower.unlocked())if(shp>16)
+      {
+        if(is_near_ewiz_found)
+        {
+          auto wall=get_wizwall(self);
+          if(wall.n>=2)if(inside_wizwall(self,wall))ignore_go_back_because_of_wizwall=true;
+        }else ignore_go_back_because_of_wizwall=true;
+      }
+      if(ignore_go_back_because_of_wizwall){
+        bfp_sum.go_back=false;bfp_sum.go_fast=false;
       }
       if(bfp_sum.go_back){dir=to_our_base;}
       if(!final_mode||shp<=12)if(bfp_sum.go_fast){move.setTurn(self.getAngleTo(sp.x+dir.x,sp.y+dir.y));}
@@ -1350,6 +1420,63 @@ struct MeWorld:public World
     }
     auto max_turn_ticks=Pi/get_angspd(self);
     int gg=1;
+  }
+  static bool has_status(const Wizard&ref,StatusType type){bool already=false;QAP_FOREACH(ref.statuses,if(ex.type==type)already=true;);return already;}
+  static real status_cast_range(){return Pi*0.95/12.0;}
+  bool try_haste(const Wizard&self,const Game&game,Move&move)
+  {
+    auto sp=get_pos(self);
+    if(self.mana<game.hasteManacost)return false;
+    if(!qap_includes(self.skills,SKILL_HASTE))return false;
+    if(self.remainingActionCooldownTicks)return false;
+    if(self.remainingCooldownTicksByAction[ACTION_HASTE])return false;
+    auto&arr=wizards;
+    for(int i=0;i<arr.size();i++)
+    {
+      auto&ex=arr[i];
+      if(ex.id==self.id)continue;
+      if(ex.faction!=self.faction)continue;
+      if(!get_pos(ex).dist_to_point_less_that_r(sp,game.wizardCastRange))continue;
+      if(has_status(ex,STATUS_HASTENED))continue;
+      auto angle=self.getAngleTo(ex);
+      move.setTurn(angle);
+      if(abs(angle)>status_cast_range())return true;
+      move.setAction(ACTION_HASTE);
+      move.setStatusTargetId(ex.id);
+      move.setCastAngle(angle);
+      move.setMinCastDistance(self.radius+5);
+      move.setMaxCastDistance(+4000);
+      return true;
+    }
+    return false;
+  }
+  bool try_shield(const Wizard&self,const Game&game,Move&move)
+  {
+    auto sp=get_pos(self);
+    if(self.mana<game.shieldManacost)return false;
+    if(!qap_includes(self.skills,SKILL_SHIELD))return false;
+    if(self.remainingActionCooldownTicks)return false;
+    if(self.remainingCooldownTicksByAction[ACTION_SHIELD])return false;
+    auto&arr=wizards;
+    for(int i=0;i<arr.size();i++)
+    {
+      auto&ex=arr[i];
+      if(ex.id==self.id)continue;
+      if(ex.faction!=self.faction)continue;
+      if(ex.faction!=self.faction)continue;
+      if(!get_pos(ex).dist_to_point_less_that_r(sp,game.wizardCastRange))continue;
+      if(has_status(ex,STATUS_SHIELDED))continue;
+      auto angle=self.getAngleTo(ex);
+      move.setTurn(angle);
+      if(abs(angle)>=status_cast_range())return true;
+      move.setAction(ACTION_SHIELD);
+      move.setStatusTargetId(ex.id);
+      move.setCastAngle(angle);
+      move.setMinCastDistance(self.radius+5);
+      move.setMaxCastDistance(+4000);
+      return true;
+    }
+    return false;
   }
   static bool is_almost_colinear(const vec2d&a,const vec2d&b){return a.Mag()>0.01&&abs(a.Rot(b).Norm().y)<0.01;}
 };
@@ -1451,7 +1578,8 @@ void MyStrategy::move(const Wizard& self, const World& world, const Game& game, 
       b.dmg=ex.getDamage();
       b.faction=self.faction!=FACTION_ACADEMY?FACTION_ACADEMY:FACTION_RENEGADES;
       b.type=ex.type;
-      if(ex.getType()==BUILDING_FACTION_BASE)real_enemy_base_pos=b.pos;
+      if(ex.type==BUILDING_FACTION_BASE)real_enemy_base_pos=b.pos;
+      if(ex.type==BUILDING_FACTION_BASE)real_our_base_pos=get_pos(ex);
     }
     auto center=wh*0.5;
     {
@@ -1525,10 +1653,29 @@ void MyStrategy::move(const Wizard& self, const World& world, const Game& game, 
     //vector<SkillType> log;for(int i=0;i<25;i++){
     SkillType ignore[]={
       SKILL_FROST_BOLT,
-      SKILL_FIREBALL,
-      SKILL_HASTE,
-      SKILL_SHIELD,
+      SKILL_FIREBALL
     };
+    auto TO_MISSILE=SKILL_RANGE_BONUS_PASSIVE_1;
+    auto TO_FROST_BOLT=SKILL_MAGICAL_DAMAGE_BONUS_PASSIVE_1;
+    auto TO_FIREBALL=SKILL_STAFF_DAMAGE_BONUS_PASSIVE_1;
+    auto TO_HASTE=SKILL_MOVEMENT_BONUS_FACTOR_PASSIVE_1;
+    auto TO_SHIELD=SKILL_MAGICAL_DAMAGE_ABSORPTION_PASSIVE_1;
+
+    SkillType id2firstskill[]={
+      TO_FROST_BOLT,
+      TO_FIREBALL,
+      TO_MISSILE,
+      TO_HASTE,
+      TO_SHIELD
+    };
+
+    //SkillType id2firstskill[]={
+    //  TO_HASTE,
+    //  TO_FIREBALL,
+    //  TO_MISSILE,
+    //  TO_FIREBALL,
+    //  TO_MISSILE
+    //};
 
     auto next=[&ignore](SkillType last)->SkillType{
       auto tmp=SkillType((last+1)%_SKILL_COUNT_);
@@ -1537,7 +1684,7 @@ void MyStrategy::move(const Wizard& self, const World& world, const Game& game, 
     };
 
     auto&arr=self.skills;//{auto arr=log;
-    auto firstSkill=!game.rawMessagesEnabled?SKILL_RANGE_BONUS_PASSIVE_1:SkillType(SKILL_RANGE_BONUS_PASSIVE_1+5*((self.id-1)%5));
+    auto firstSkill=!game.rawMessagesEnabled?SKILL_RANGE_BONUS_PASSIVE_1:id2firstskill[(self.id-1)%5];//SkillType(SKILL_RANGE_BONUS_PASSIVE_1+5*((self.id-1)%5));
     auto skill=!arr.empty()?next(arr.back()):firstSkill;//SKILL_MOVEMENT_BONUS_FACTOR_PASSIVE_1
     move.setSkillToLearn(skill);
     //qap_add_back(log)=skill;}}
